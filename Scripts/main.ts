@@ -1,5 +1,7 @@
-import { AudioEngine, FrameBuilder, WebGpuRenderHost, XrArmLocomotionSolver, XrHandCollisionResolver, XrPresentation, XrRig, canvasSubImageCopier, composeMatrix, createPhysicsWorld3d, importGltf, solveTwoBoneIk, uploadGltfAsset, type DrawOptions, type MeshUpload, type PhysicsWorld3dBridge, type XrFrameSnapshot, type XrHandContact } from "@vapour/engine";
+import { AudioEngine, FrameBuilder, WebGpuRenderHost, XrArmLocomotionSolver, XrHandCollisionResolver, XrRig, composeMatrix, createPhysicsWorld3d, importGltf, uploadGltfAsset, type DrawOptions, type PhysicsWorld3dBridge, type XrFrameSnapshot, type XrHandContact } from "@vapour/engine";
 import { compose, invert, multiplyMat4, quatFromAxisAngle, quatFromEuler, quatLookRotation, rotateVector, transformDirection, transformPoint, type Mat4, type Vec3 } from "@vapour/math";
+import { createPresentation, yawOf } from "../../shared/xr-present.js";
+import { bindPose, collapse, drawSkinned, loadSkinnedGlb, reachFor, translation, type SkinnedModel } from "../../shared/skinned-glb.js";
 
 // ---------- tuning knobs ----------
 const GRAVITY = 12;            // m/s²
@@ -25,7 +27,7 @@ host.setPostProcess({ exposure: 1, toneMapping: "aces", antiAliasing: "none" });
 const fb = new FrameBuilder(1024);
 let physics: PhysicsWorld3dBridge;
 const mapDraws: { mesh: string; options: DrawOptions }[] = [];
-let monke: { draws: { mesh: string; options: DrawOptions }[]; bind: Mat4[]; ibm: Mat4[]; joint: Record<string, number>; parent: number[] } | undefined;
+let monke: SkinnedModel | undefined;
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 async function loadMap(): Promise<void> {
@@ -63,28 +65,6 @@ async function loadMap(): Promise<void> {
   physics.insert({ id: 1, bodyType: "static", position: [0, 0, 0], rotation: [0, 0, 0, 1], shape: { type: "triangleMesh", vertices: physVerts, indices: physTris }, friction: 1 });
   physics.flush();
   physics.step(1 / 60); // queries only see colliders after a step
-}
-
-/** The player model is skinned; the importer drops skins, so read joints, weights and inverse binds straight from the GLB. */
-async function loadMonke(): Promise<void> {
-  const bytes = await (await fetch(new URL("assets/Models/monke.glb", document.baseURI))).arrayBuffer();
-  const view = new DataView(bytes), jsonLength = view.getUint32(12, true), json = JSON.parse(new TextDecoder().decode(new Uint8Array(bytes, 20, jsonLength))), binOffset = 20 + jsonLength + 8;
-  const accessor = (index: number): Float32Array | Uint16Array | Uint8Array => {
-    const a = json.accessors[index], bv = json.bufferViews[a.bufferView], offset = binOffset + (bv.byteOffset ?? 0) + (a.byteOffset ?? 0);
-    const count = a.count * ({ SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT4: 16 } as Record<string, number>)[a.type]!;
-    return a.componentType === 5126 ? new Float32Array(bytes, offset, count) : a.componentType === 5123 ? new Uint16Array(bytes, offset, count) : new Uint8Array(bytes, offset, count);
-  };
-  const model = await importGltf(bytes, { sourceName: "monke.glb" });
-  const asset = await uploadGltfAsset(host, model, { id: "monke" });
-  for (const [meshIndex, mesh] of (json.meshes as { primitives: { attributes: Record<string, number> }[] }[]).entries()) for (const [p, prim] of mesh.primitives.entries()) {
-    const index = model.meshPrimitives[meshIndex]![p]!, upload: MeshUpload = { ...model.primitives[index]!.mesh, boneIndices: Uint32Array.from(accessor(prim.attributes["JOINTS_0"]!)), boneWeights: Float32Array.from(accessor(prim.attributes["WEIGHTS_0"]!)) };
-    host.uploadMesh(`monke:skinned:${index}`, upload); host.releaseMesh(asset.meshIds[index]!); // a fresh id: replacing in place keeps the unskinned vertex layout
-  }
-  const skin = json.skins[0] as { joints: number[]; inverseBindMatrices: number }, flat = accessor(skin.inverseBindMatrices) as Float32Array;
-  const ibm: Mat4[] = skin.joints.map((_, i) => Array.from(flat.subarray(i * 16, i * 16 + 16)));
-  const joint: Record<string, number> = {}, parent: number[] = skin.joints.map(() => -1);
-  skin.joints.forEach((node, i) => { const n = json.nodes[node] as { name: string; children?: number[] }; joint[n.name.replace(/_\d+$/, "")] = i; for (const c of n.children ?? []) { const ci = skin.joints.indexOf(c); if (ci >= 0) parent[ci] = i; } });
-  monke = { draws: asset.draws.map((d) => ({ mesh: `monke:skinned:${asset.meshIds.indexOf(d.mesh)}`, options: d.options })), bind: ibm.map((mat) => invert(mat)), ibm, joint, parent };
 }
 
 // ---------- player ----------
@@ -197,7 +177,6 @@ function updateBots(dt: number, head: Vec3): void {
 
 // ---------- drawing ----------
 const m = new Float32Array(16);
-const Q_ID: [number, number, number, number] = [0, 0, 0, 1];
 function drawWorld(head: Vec3, headYaw: number, firstPerson: boolean): void {
   fb.setEnvironment({ clearColor: [0.55, 0.75, 0.95, 1], fog: { mode: "exponential", color: [0.7, 0.8, 0.92], density: 0.006 }, sky: { mode: "procedural", zenithColor: [0.2, 0.45, 0.95], horizonColor: [0.75, 0.85, 0.95], groundColor: [0.3, 0.3, 0.32], horizonCurve: 2 } });
   fb.lights.addHemisphere([0.9, 0.95, 1], [0.35, 0.3, 0.25], 1.6); // no directional light: it would turn on cascaded shadows
@@ -215,32 +194,15 @@ function drawWorld(head: Vec3, headYaw: number, firstPerson: boolean): void {
 /** Draws the gorilla with its head joint at `root`. With `arms`, the arms reach for the hands by two-bone IK. */
 function drawMonke(root: Mat4, arms: { left: Hand; right: Hand; hideHead: boolean } | undefined, tint: [number, number, number, number]): void {
   if (monke === undefined) return;
-  const { bind, ibm, joint, parent } = monke;
-  const body = multiplyMat4(root, invert(bind[joint["Head"]!]!)); // model space -> world, with the head joint landing on root
-  const world: Mat4[] = bind.map((b) => multiplyMat4(body, b));
+  const j = (name: string) => monke!.joint[name]!;
+  const world = bindPose(monke, multiplyMat4(root, invert(monke.bind[j("Head_0")]!))); // model space -> world, with the head joint landing on root
   if (arms !== undefined) {
-    for (const [side, hand] of [["R", arms.right], ["L", arms.left]] as const) {
-      const s = joint[`Upper Arm ${side}`]!, e = joint[`Lower Arm ${side}`]!, w = joint[`Wrist ${side}`]!;
-      const r = translation(world[s]!), mid = translation(world[e]!), tip = translation(world[w]!);
-      const pole = transformPoint(root, [side === "R" ? -0.5 : 0.5, -0.4, 0.6]); // elbows out, down and back (model faces +Z)
-      let ik;
-      try { ik = solveTwoBoneIk({ root: r, mid, tip, target: hand.pos, pole }); } catch { continue; }
-      const about = (p: Vec3, q: readonly number[]): Mat4 => multiplyMat4(compose(p, q, [1, 1, 1]), compose([-p[0], -p[1], -p[2]], Q_ID, [1, 1, 1]));
-      const dRoot = about(r, ik.rootRotation);
-      const dMid = multiplyMat4(about(transformPoint(dRoot, mid), ik.midRotation), dRoot);
-      for (let j = 0; j < world.length; j += 1) {
-        if (j === s) world[j] = multiplyMat4(dRoot, world[j]!);
-        else if (j === e || isDescendant(j, e, parent)) world[j] = multiplyMat4(dMid, world[j]!);
-      }
-    }
-    if (arms.hideHead) for (const name of ["Head", "Main"]) world[joint[name]!] = compose(translation(root), Q_ID, [0.001, 0.001, 0.001]); // first person: collapse head and body, keep the arms
+    reachFor(monke, world, j("Upper Arm R_6"), j("Lower Arm R_5"), j("Wrist R_4"), arms.right.pos, transformPoint(root, [-0.5, -0.4, 0.6])); // elbows out, down and back (model faces +Z)
+    reachFor(monke, world, j("Upper Arm L_12"), j("Lower Arm L_11"), j("Wrist L_10"), arms.left.pos, transformPoint(root, [0.5, -0.4, 0.6]));
+    if (arms.hideHead) for (const name of ["Head_0", "Main_13"]) collapse(world, j(name), translation(root)); // first person: collapse head and body, keep the arms
   }
-  const palette = new Float32Array(world.length * 16); // per draw: the frame builder keeps a reference until it packs
-  for (let j = 0; j < world.length; j += 1) palette.set(multiplyMat4(world[j]!, ibm[j]!), j * 16);
-  for (const d of monke.draws) fb.draw(d.mesh, IDENTITY, { ...d.options, bones: palette, color: tint });
+  drawSkinned(fb, monke, world, tint);
 }
-function isDescendant(j: number, ancestor: number, parent: number[]): boolean { for (let p = parent[j]!; p >= 0; p = parent[p]!) if (p === ancestor) return true; return false; }
-function translation(mat: Mat4): Vec3 { return [mat[12]!, mat[13]!, mat[14]!]; }
 
 // ---------- boot ----------
 const rig = new XrRig({ referenceSpace: "local-floor" });
@@ -254,7 +216,7 @@ const note = overlay.querySelector<HTMLElement>("#note")!, enter = overlay.query
 (async () => {
   await host.initialize();
   physics = await createPhysicsWorld3d({ moduleUrl });
-  await Promise.all([loadMap(), loadMonke()]);
+  [, monke] = await Promise.all([loadMap(), loadSkinnedGlb(host, new URL("assets/Models/monke.glb", document.baseURI), "monke")]);
   player.pos = [...SPAWN];
   const xrOk = await navigator.xr?.isSessionSupported("immersive-vr").catch(() => false);
   enter.disabled = false;
@@ -273,7 +235,7 @@ function showError(error: unknown): void {
 async function startXr(): Promise<void> {
   const session = await navigator.xr!.requestSession("immersive-vr", { requiredFeatures: ["local-floor"] });
   const space = await session.requestReferenceSpace("local-floor");
-  const presentation = await createPresentation(session);
+  const presentation = await createPresentation(session, host, canvas, XR_SCALE);
   pulse = (hand, strength, ms) => { for (const src of session.inputSources) if (src.handedness === hand) void src.gamepad?.hapticActuators?.[0]?.pulse(strength, ms); };
   const contacts = new XrHandCollisionResolver(physics, { defaultSingleHandSlip: 0.01, defaultBracedSlip: 0.03 });
   const arms = new XrArmLocomotionSolver({ gravity: 0, maxSpeed: 9, maxLaunchSpeed: 8, launchMultiplier: 1.2 });
@@ -315,7 +277,7 @@ async function startXr(): Promise<void> {
     const swinging = hands.left.anchor !== undefined || hands.right.anchor !== undefined;
     const armMove = arm.supportedHands.length > 0 && !swinging ? rotateVector(Ryaw, arm.translation) : undefined;
     const launch = arm.launchVelocity.some((c) => c !== 0) ? rotateVector(Ryaw, arm.launchVelocity) : undefined;
-    const yaw = rigYaw + headYawOf(viewer.transform.matrix);
+    const yaw = rigYaw + yawOf(viewer.transform.matrix);
     simulate(dt, head, armMove, launch, stick, yaw);
     updateBots(dt, head);
     fb.reset();
@@ -323,57 +285,6 @@ async function startXr(): Promise<void> {
     drawWorld(transformPoint(rig.rigMatrix(snapshot) as Mat4, hmd), yaw, true);
     presentation.present(viewer.views, rig.resolve(snapshot), fb.pack(), time);
   });
-}
-
-function headYawOf(mat: ArrayLike<number>): number { return Math.atan2(mat[8]!, mat[10]!); }
-
-/** WebXR/WebGPU binding when Meta Browser exposes it, otherwise an XRWebGLLayer fed by blitting the WebGPU canvas. */
-async function createPresentation(session: XRSession): Promise<{ present: XrPresentation<unknown, XRView>["present"] }> {
-  const XRGPUBinding = (globalThis as { XRGPUBinding?: new (s: XRSession, d: GPUDevice) => never }).XRGPUBinding;
-  if (XRGPUBinding !== undefined) {
-    const adapter = await navigator.gpu.requestAdapter({ xrCompatible: true } as GPURequestAdapterOptions);
-    const device = await adapter!.requestDevice();
-    const binding = new XRGPUBinding(session, device);
-    // two-pass: the renderer clears the whole canvas per layer, so a single side-by-side submission loses the first eye
-    const p = new XrPresentation<unknown, XRView>({ host, binding, session, copy: canvasSubImageCopier(device, canvas), scaleFactor: XR_SCALE, multiview: false });
-    return { present: (views, rigFrame, frame, t) => p.present(views, rigFrame, frame, t) };
-  }
-  const gl = document.createElement("canvas").getContext("webgl2", { xrCompatible: true, alpha: false, antialias: false } as WebGLContextAttributes) as WebGL2RenderingContext;
-  await gl.makeXRCompatible();
-  const layer = new XRWebGLLayer(session, gl, { framebufferScaleFactor: XR_SCALE });
-  session.updateRenderState({ baseLayer: layer });
-  const blit = canvasBlitter(gl);
-  // a fake binding so XrPresentation drives the eyes for us; the copier does the WebGL blit
-  const binding = {
-    createProjectionLayer: () => layer,
-    getViewSubImage: (_l: unknown, view: XRView) => { const v = layer.getViewport(view)!; return { colorTexture: { width: layer.framebufferWidth, height: layer.framebufferHeight }, viewport: { x: v.x, y: v.y, width: v.width, height: v.height }, imageIndex: 0 }; },
-    getPreferredColorFormat: () => "rgba8unorm" as const,
-  };
-  const p = new XrPresentation<unknown, XRView>({ host, binding, session: { updateRenderState() {} }, copy: ({ sourceRect, destinationRect }) => blit(layer.framebuffer, canvas, sourceRect, destinationRect), multiview: false });
-  return { present: (views, rigFrame, frame, t) => { const r = p.present(views, rigFrame, frame, t); gl.flush(); return r; } };
-}
-
-function canvasBlitter(gl: WebGL2RenderingContext) {
-  const compile = (type: number, src: string) => { const s = gl.createShader(type)!; gl.shaderSource(s, src); gl.compileShader(s); return s; };
-  const prog = gl.createProgram()!;
-  gl.attachShader(prog, compile(gl.VERTEX_SHADER, "#version 300 es\nprecision highp float;in vec2 p;out vec2 uv;void main(){vec2 t=(p+1.0)*0.5;uv=vec2(t.x,1.0-t.y);gl_Position=vec4(p,0.0,1.0);}"));
-  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, "#version 300 es\nprecision highp float;uniform sampler2D img;in vec2 uv;out vec4 c;void main(){c=texture(img,uv);}"));
-  gl.linkProgram(prog);
-  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
-  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
-  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k!, v!);
-  return (framebuffer: WebGLFramebuffer | null, source: HTMLCanvasElement, src: { x: number; y: number; width: number; height: number }, dst: { x: number; y: number; width: number; height: number }) => {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.useProgram(prog); gl.bindVertexArray(vao); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
-    // upload only this eye's rectangle of the side-by-side canvas (WebGL2 sub-rectangle upload), mediump would quantize the UVs
-    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, source.width); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, src.x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, src.y);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, src.width, src.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    gl.viewport(dst.x, dst.y, dst.width, dst.height);
-    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-  };
 }
 
 // ---------- desktop fallback: mouse look, WASD, mouse buttons fire webs ----------
