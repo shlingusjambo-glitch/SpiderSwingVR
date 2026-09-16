@@ -12,7 +12,7 @@ const AIR_CONTROL = 7;         // m/s² thumbstick steering in the air
 const JUMP = 9;
 const ZIP = 9;                 // m/s kick toward the anchor when a web lands, so a fresh web launches you
 const REEL_ACCEL = 22;         // m/s² pull toward the anchor while the rope is longer than its target
-const XR_SCALE = 1;            // ponytail: eye-buffer scale; drop toward 0.8 if the Quest 2 misses 72 Hz
+const XR_SCALE = 0.7;          // ponytail: eye-buffer scale; Quest 2 could not hold 72 Hz at 1
 
 // ---------- city ----------
 interface Building { box: Aabb; color: [number, number, number, number]; }
@@ -35,7 +35,7 @@ for (let gx = 0; gx < GRID; gx += 1) for (let gz = 0; gz < GRID; gz += 1) {
 // ---------- npcs ----------
 interface Npc { pos: Vec3; dir: Vec3; color: [number, number, number, number]; turnIn: number; hop: number; phase: number; }
 const npcs: Npc[] = [];
-for (let i = 0; i < 160; i += 1) {
+for (let i = 0; i < 90; i += 1) {
   const line = -HALF + Math.floor(rand() * (GRID + 1)) * BLOCK, along = -HALF + rand() * GRID * BLOCK, side = rand() < 0.5 ? -5.5 : 5.5;
   const onX = rand() < 0.5;
   npcs.push({ pos: onX ? [along, 0, line + side] : [line + side, 0, along], dir: onX ? [rand() < 0.5 ? 1 : -1, 0, 0] : [0, 0, rand() < 0.5 ? 1 : -1], color: [rand(), rand(), rand(), 1], turnIn: 3 + rand() * 8, hop: 0, phase: rand() * 7 });
@@ -63,11 +63,6 @@ function synth(id: string, seconds: number, sample: (t: number, noise: number) =
   audio.registerClip(id, buffer);
 }
 synth("thwip", 0.22, (t, n) => Math.exp(-t * 28) * (n * 0.5 + Math.sin(t * (1400 - t * 5000) * Math.PI * 2) * 0.6));
-synth("release", 0.12, (t, n) => Math.exp(-t * 45) * n * 0.5);
-synth("token", 0.5, (t) => Math.exp(-t * 7) * (Math.sin(t * 1320 * Math.PI * 2) + Math.sin(t * 1980 * Math.PI * 2) * 0.5) * 0.35);
-let windLow = 0;
-synth("wind", 2, (_t, n) => (windLow += (n - windLow) * 0.08) * 2.5); // one-pole low-pass noise, seamless enough as a loop
-let wind: ReturnType<AudioEngine["play"]> | undefined;
 function sfx(id: string, pitch = 1, volume = 0.6): void { try { audio.play(id, { pitch, volume }); } catch { /* audio not unlocked yet */ } }
 (globalThis as { spider?: unknown }).spider = { player, hands }; // console debugging
 
@@ -106,7 +101,7 @@ function updateHand(hand: Hand, which: "left" | "right", held: boolean, head: Ve
   } else if (!held && hand.anchor !== undefined) {
     delete hand.anchor;
     if (!player.grounded) player.vel = clampLen(scaleV(player.vel, RELEASE_BOOST), MAX_SPEED);
-    pulse(which, 0.25, 20); sfx("release", 1, 0.3);
+    pulse(which, 0.25, 20);
   }
 }
 
@@ -149,10 +144,7 @@ function simulate(dt: number, head: Vec3, stick: [number, number], yaw: number):
   }
   if (player.grounded) { player.vel[0] *= 1 - Math.min(1, 6 * dt); player.vel[2] *= 1 - Math.min(1, 6 * dt); }
   // tokens
-  for (const t of tokens) if (!t.taken && dist(t.pos, head) < 1.6) { t.taken = true; player.score += 1; pulse("left", 1, 80); pulse("right", 1, 80); sfx("token"); }
-  // wind rises with airspeed
-  const speed = len(player.vel);
-  wind?.setVolume(Math.min(1, Math.max(0, (speed - 4) / 30)) * 0.9); wind?.setPitch(0.7 + speed / 50);
+  for (const t of tokens) if (!t.taken && dist(t.pos, head) < 1.6) { t.taken = true; player.score += 1; pulse("left", 1, 80); pulse("right", 1, 80); }
   // npcs wander the sidewalks and hop when Spidey flies past
   const fast = len(player.vel) > 12;
   for (const n of npcs) {
@@ -170,8 +162,8 @@ const m = new Float32Array(16);
 const Q_ID: [number, number, number, number] = [0, 0, 0, 1];
 function drawWorld(fb: FrameBuilder, time: number): void {
   fb.setEnvironment({ clearColor: [0.55, 0.75, 0.95, 1], fog: { mode: "exponential", color: [0.7, 0.8, 0.92], density: 0.0035 }, sky: { mode: "procedural", zenithColor: [0.2, 0.45, 0.95], horizonColor: [0.75, 0.85, 0.95], groundColor: [0.3, 0.3, 0.32], horizonCurve: 2 } });
-  fb.lights.addAmbient([0.55, 0.65, 0.8], 0.9);
-  fb.lights.addDirectional([-0.4, -0.8, -0.3], [1, 0.95, 0.85], 3.2);
+  // hemisphere only: any directional light turns on cascaded shadow maps, which the Quest 2 cannot afford twice per frame
+  fb.lights.addHemisphere([0.8, 0.88, 1], [0.22, 0.2, 0.18], 1.5);
   fb.draw("builtin:cube", composeMatrix(m, [0, -0.5, 0], Q_ID, [HALF * 2 + 200, 1, HALF * 2 + 200]), { color: [0.42, 0.42, 0.4, 1], roughness: 1 });
   for (let i = 0; i <= GRID; i += 1) {
     const line = -HALF + i * BLOCK;
@@ -181,10 +173,9 @@ function drawWorld(fb: FrameBuilder, time: number): void {
   for (const b of buildings) {
     const { min, max } = b.box;
     fb.draw("builtin:cube", composeMatrix(m, [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2], Q_ID, [max[0] - min[0], max[1] - min[1], max[2] - min[2]]), { color: b.color, roughness: 0.7 });
-    // roof cap for a little silhouette variety
-    fb.draw("builtin:cube", composeMatrix(m, [(min[0] + max[0]) / 2, max[1] + 0.6, (min[2] + max[2]) / 2], Q_ID, [(max[0] - min[0]) * 0.6, 1.2, (max[2] - min[2]) * 0.6]), { color: [0.2, 0.2, 0.22, 1], roughness: 0.9 });
   }
   for (const n of npcs) {
+    if (dist(n.pos, player.pos) > 140) continue; // too small to see, not worth two draws
     const bob = Math.abs(Math.sin(time * 9 + n.phase)) * 0.05 + (n.hop > 0 ? Math.sin((0.6 - n.hop) / 0.6 * Math.PI) * 0.8 : 0);
     const q = quatLookRotation(n.dir);
     fb.draw("builtin:capsule", composeMatrix(m, [n.pos[0], 0.75 + bob, n.pos[2]], q, [0.9, 1.5, 0.9]), { color: n.color, roughness: 0.8 });
@@ -219,7 +210,7 @@ const note = overlay.querySelector<HTMLElement>("#note")!, enter = overlay.query
 host.initialize().then(async () => {
   const xrOk = await navigator.xr?.isSessionSupported("immersive-vr").catch(() => false);
   if (!xrOk) { enter.textContent = "Play on desktop"; note.textContent = "No VR headset found. Desktop: mouse look, WASD steer, left/right mouse buttons fire webs, space jumps."; }
-  enter.onclick = () => { overlay.remove(); void audio.unlock().then(() => { wind = audio.play("wind", { loop: true, volume: 0 }); }); void (xrOk ? startXr() : startDesktop()); };
+  enter.onclick = () => { overlay.remove(); void audio.unlock(); void (xrOk ? startXr() : startDesktop()); };
 }).catch(showError);
 
 function showError(error: unknown): void {
