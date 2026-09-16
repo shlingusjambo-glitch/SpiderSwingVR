@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "id": "20866d48-84bd-4f6e-9efe-652dd83d55e7",
-  "name": "Spider Swing VR",
+  "name": "Monke Swing",
   "editorVersion": "0.2.0-alpha",
   "startupScene": "Assets/Scenes/Main.scene.json",
   "scriptEntry": "Scripts/main.ts",

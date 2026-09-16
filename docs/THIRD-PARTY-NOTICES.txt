@@ -1,4 +1,4 @@
-Spider Swing VR — third-party notices
+Monke Swing — third-party notices
 
 Vapour Engine
   Copyright the Vapour Engine contributors.
