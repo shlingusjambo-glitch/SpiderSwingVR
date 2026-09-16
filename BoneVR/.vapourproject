@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "id": "af85f43a-4256-402e-9d61-73a31db58b01",
+  "name": "BoneVR",
+  "editorVersion": "0.2.0-alpha",
+  "startupScene": "Assets/Scenes/Main.scene.json",
+  "scriptEntry": "Scripts/main.ts",
+  "rendering": {
+    "preferredCanvasFormat": "auto",
+    "powerPreference": "high-performance"
+  }
+}

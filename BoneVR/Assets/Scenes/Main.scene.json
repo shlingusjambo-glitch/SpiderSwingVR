@@ -1,0 +1,259 @@
+{
+  "formatVersion": 1,
+  "id": "de8ae26b-6730-4a5f-94ba-1c0eeab7d405",
+  "name": "Main XR",
+  "entities": [
+    {
+      "id": "0f187442-129c-4895-8216-f08e4015ad92",
+      "name": "Grabbable Sphere",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.MeshRenderer",
+          "version": 1,
+          "data": {
+            "mesh": "builtin:sphere",
+            "material": "builtin:default",
+            "baseColor": [
+              0.9,
+              0.55,
+              0.3,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.6,
+            "emissive": 0.4,
+            "alphaCutoff": 0.01
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              0.53,
+              -0.9
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              0.12,
+              0.12,
+              0.12
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "37769e95-dc8f-47da-b850-5eb5f7ea388d",
+      "name": "Table",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.MeshRenderer",
+          "version": 1,
+          "data": {
+            "mesh": "builtin:cube",
+            "material": "builtin:default",
+            "baseColor": [
+              0.24,
+              0.48,
+              1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.6,
+            "emissive": 0,
+            "alphaCutoff": 0.01
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              0.4,
+              -0.9
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1.2,
+              0.08,
+              0.7
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "38cefbd9-bb63-406a-b455-9587a983b8a3",
+      "name": "Directional Light",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.DirectionalLight",
+          "version": 1,
+          "data": {
+            "color": [
+              1,
+              0.96,
+              0.88
+            ],
+            "intensity": 3
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              3,
+              1
+            ],
+            "rotation": [
+              0.45080332739453005,
+              -0.19198428229200928,
+              0.09994069158504512,
+              0.8659851347040232
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "3b65937c-4cd9-4198-ab47-e58995302b26",
+      "name": "XR Rig",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "48afadc9-a3e3-4e3d-9748-1db6609be96d",
+      "name": "Head Camera",
+      "parent": "3b65937c-4cd9-4198-ab47-e58995302b26",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.Camera",
+          "version": 1,
+          "data": {
+            "projection": "perspective",
+            "fieldOfView": 60,
+            "orthographicSize": 10,
+            "near": 0.1,
+            "far": 1000
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              1.6,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "c07af28b-36ac-48a0-b66b-e94250945a85",
+      "name": "Floor",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.MeshRenderer",
+          "version": 1,
+          "data": {
+            "mesh": "builtin:plane",
+            "material": "builtin:default",
+            "baseColor": [
+              0.16,
+              0.17,
+              0.19,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.9,
+            "emissive": 0,
+            "alphaCutoff": 0.01
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              6,
+              1,
+              6
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

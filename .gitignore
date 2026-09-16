@@ -1,4 +1,11 @@
+# engine SDK and sources stay local (see engine-patches/ for what changed)
+vapour-engine-0.2.5-alpha/
+EngineSource/
+EngineCheck/
+Map.zip
+PlayerModel.glb
+.DS_Store
 .vapour/
 dist/
 node_modules/
-.DS_Store
+.claude/
