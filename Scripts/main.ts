@@ -1,4 +1,4 @@
-import { FrameBuilder, WebGpuRenderHost, XrPresentation, XrRig, canvasSubImageCopier, composeMatrix, type XrFrameSnapshot } from "@vapour/engine";
+import { AudioEngine, FrameBuilder, WebGpuRenderHost, XrPresentation, XrRig, canvasSubImageCopier, composeMatrix, type XrFrameSnapshot } from "@vapour/engine";
 import { aabb, multiplyMat4, quatFromAxisAngle, quatFromEuler, quatLookRotation, ray, rayIntersectsAabb, rotateVector, transformDirection, transformPoint, type Aabb, type Mat4, type Vec3 } from "@vapour/math";
 
 // ---------- tuning knobs ----------
@@ -12,7 +12,7 @@ const AIR_CONTROL = 7;         // m/s² thumbstick steering in the air
 const JUMP = 9;
 const ZIP = 9;                 // m/s kick toward the anchor when a web lands, so a fresh web launches you
 const REEL_ACCEL = 22;         // m/s² pull toward the anchor while the rope is longer than its target
-const XR_SCALE = 0.75;         // ponytail: eye-buffer scale; raise toward 1 if the Quest 2 holds 72 Hz
+const XR_SCALE = 1;            // ponytail: eye-buffer scale; drop toward 0.8 if the Quest 2 misses 72 Hz
 
 // ---------- city ----------
 interface Building { box: Aabb; color: [number, number, number, number]; }
@@ -53,6 +53,22 @@ interface Hand { pos: Vec3; aim: Vec3; anchor?: Vec3; rope: number; target: numb
 const player = { pos: [0, 0, 0] as Vec3, vel: [0, 0, 0] as Vec3, grounded: true, score: 0 };
 const hands: Record<"left" | "right", Hand> = { left: { pos: [-0.3, 1.2, -0.3], aim: [0, 0, -1], rope: 0, target: 0, squeeze: 0 }, right: { pos: [0.3, 1.2, -0.3], aim: [0, 0, -1], rope: 0, target: 0, squeeze: 0 } };
 let pulse: (hand: "left" | "right", strength: number, ms: number) => void = () => {};
+
+// ---------- sounds: synthesized once, so there are no audio files to host ----------
+const audioContext = new AudioContext();
+const audio = new AudioEngine(audioContext);
+function synth(id: string, seconds: number, sample: (t: number, noise: number) => number): void {
+  const buffer = audioContext.createBuffer(1, Math.floor(audioContext.sampleRate * seconds), audioContext.sampleRate), data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i += 1) data[i] = sample(i / audioContext.sampleRate, Math.random() * 2 - 1);
+  audio.registerClip(id, buffer);
+}
+synth("thwip", 0.22, (t, n) => Math.exp(-t * 28) * (n * 0.5 + Math.sin(t * (1400 - t * 5000) * Math.PI * 2) * 0.6));
+synth("release", 0.12, (t, n) => Math.exp(-t * 45) * n * 0.5);
+synth("token", 0.5, (t) => Math.exp(-t * 7) * (Math.sin(t * 1320 * Math.PI * 2) + Math.sin(t * 1980 * Math.PI * 2) * 0.5) * 0.35);
+let windLow = 0;
+synth("wind", 2, (_t, n) => (windLow += (n - windLow) * 0.08) * 2.5); // one-pole low-pass noise, seamless enough as a loop
+let wind: ReturnType<AudioEngine["play"]> | undefined;
+function sfx(id: string, pitch = 1, volume = 0.6): void { try { audio.play(id, { pitch, volume }); } catch { /* audio not unlocked yet */ } }
 (globalThis as { spider?: unknown }).spider = { player, hands }; // console debugging
 
 function bodyCentre(head: Vec3): Vec3 { return [head[0], head[1] - 0.3, head[2]]; }
@@ -85,12 +101,12 @@ function updateHand(hand: Hand, which: "left" | "right", held: boolean, head: Ve
       // from the ground the rope reels in short enough to swing clear of the street; in the air it just tightens a little
       hand.anchor = hit; hand.rope = d; hand.target = player.grounded ? Math.min(d, Math.max(hit[1] - c[1] - 1.5, 3)) : d * 0.9; player.grounded = false;
       addTo(player.vel, toHit, ZIP / d); player.vel[1] += ZIP * 0.5;
-      pulse(which, 0.6, 40);
+      pulse(which, 0.6, 40); sfx("thwip", 0.9 + Math.random() * 0.25);
     }
   } else if (!held && hand.anchor !== undefined) {
     delete hand.anchor;
     if (!player.grounded) player.vel = clampLen(scaleV(player.vel, RELEASE_BOOST), MAX_SPEED);
-    pulse(which, 0.25, 20);
+    pulse(which, 0.25, 20); sfx("release", 1, 0.3);
   }
 }
 
@@ -133,7 +149,10 @@ function simulate(dt: number, head: Vec3, stick: [number, number], yaw: number):
   }
   if (player.grounded) { player.vel[0] *= 1 - Math.min(1, 6 * dt); player.vel[2] *= 1 - Math.min(1, 6 * dt); }
   // tokens
-  for (const t of tokens) if (!t.taken && dist(t.pos, head) < 1.6) { t.taken = true; player.score += 1; pulse("left", 1, 80); pulse("right", 1, 80); }
+  for (const t of tokens) if (!t.taken && dist(t.pos, head) < 1.6) { t.taken = true; player.score += 1; pulse("left", 1, 80); pulse("right", 1, 80); sfx("token"); }
+  // wind rises with airspeed
+  const speed = len(player.vel);
+  wind?.setVolume(Math.min(1, Math.max(0, (speed - 4) / 30)) * 0.9); wind?.setPitch(0.7 + speed / 50);
   // npcs wander the sidewalks and hop when Spidey flies past
   const fast = len(player.vel) > 12;
   for (const n of npcs) {
@@ -200,7 +219,7 @@ const note = overlay.querySelector<HTMLElement>("#note")!, enter = overlay.query
 host.initialize().then(async () => {
   const xrOk = await navigator.xr?.isSessionSupported("immersive-vr").catch(() => false);
   if (!xrOk) { enter.textContent = "Play on desktop"; note.textContent = "No VR headset found. Desktop: mouse look, WASD steer, left/right mouse buttons fire webs, space jumps."; }
-  enter.onclick = () => { overlay.remove(); void (xrOk ? startXr() : startDesktop()); };
+  enter.onclick = () => { overlay.remove(); void audio.unlock().then(() => { wind = audio.play("wind", { loop: true, volume: 0 }); }); void (xrOk ? startXr() : startDesktop()); };
 }).catch(showError);
 
 function showError(error: unknown): void {
@@ -261,7 +280,8 @@ async function createPresentation(session: XRSession): Promise<{ present: XrPres
     const adapter = await navigator.gpu.requestAdapter({ xrCompatible: true } as GPURequestAdapterOptions);
     const device = await adapter!.requestDevice();
     const binding = new XRGPUBinding(session, device);
-    const p = new XrPresentation<unknown, XRView>({ host, binding, session, copy: canvasSubImageCopier(device, canvas), scaleFactor: XR_SCALE });
+    // two-pass: the renderer clears the whole canvas per layer, so a single side-by-side submission loses the first eye
+    const p = new XrPresentation<unknown, XRView>({ host, binding, session, copy: canvasSubImageCopier(device, canvas), scaleFactor: XR_SCALE, multiview: false });
     return { present: (views, rigFrame, frame, t) => p.present(views, rigFrame, frame, t) };
   }
   const gl = document.createElement("canvas").getContext("webgl2", { xrCompatible: true, alpha: false, antialias: false } as WebGLContextAttributes) as WebGL2RenderingContext;
@@ -269,34 +289,33 @@ async function createPresentation(session: XRSession): Promise<{ present: XrPres
   const layer = new XRWebGLLayer(session, gl, { framebufferScaleFactor: XR_SCALE });
   session.updateRenderState({ baseLayer: layer });
   const blit = canvasBlitter(gl);
-  // a fake binding so XrPresentation lays both eyes out side by side in one submission; the copier does the WebGL blit
+  // a fake binding so XrPresentation drives the eyes for us; the copier does the WebGL blit
   const binding = {
     createProjectionLayer: () => layer,
     getViewSubImage: (_l: unknown, view: XRView) => { const v = layer.getViewport(view)!; return { colorTexture: { width: layer.framebufferWidth, height: layer.framebufferHeight }, viewport: { x: v.x, y: v.y, width: v.width, height: v.height }, imageIndex: 0 }; },
     getPreferredColorFormat: () => "rgba8unorm" as const,
   };
-  const p = new XrPresentation<unknown, XRView>({ host, binding, session: { updateRenderState() {} }, copy: ({ sourceRect, destinationRect }) => blit(layer.framebuffer, canvas, sourceRect, destinationRect) });
+  const p = new XrPresentation<unknown, XRView>({ host, binding, session: { updateRenderState() {} }, copy: ({ sourceRect, destinationRect }) => blit(layer.framebuffer, canvas, sourceRect, destinationRect), multiview: false });
   return { present: (views, rigFrame, frame, t) => { const r = p.present(views, rigFrame, frame, t); gl.flush(); return r; } };
 }
 
 function canvasBlitter(gl: WebGL2RenderingContext) {
   const compile = (type: number, src: string) => { const s = gl.createShader(type)!; gl.shaderSource(s, src); gl.compileShader(s); return s; };
   const prog = gl.createProgram()!;
-  gl.attachShader(prog, compile(gl.VERTEX_SHADER, "#version 300 es\nin vec2 p;uniform vec4 rect;out vec2 uv;void main(){vec2 t=(p+1.0)*0.5;uv=vec2(rect.x+t.x*rect.z,rect.y+(1.0-t.y)*rect.w);gl_Position=vec4(p,0.0,1.0);}"));
-  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, "#version 300 es\nprecision mediump float;uniform sampler2D img;in vec2 uv;out vec4 c;void main(){c=texture(img,uv);}"));
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, "#version 300 es\nprecision highp float;in vec2 p;out vec2 uv;void main(){vec2 t=(p+1.0)*0.5;uv=vec2(t.x,1.0-t.y);gl_Position=vec4(p,0.0,1.0);}"));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, "#version 300 es\nprecision highp float;uniform sampler2D img;in vec2 uv;out vec4 c;void main(){c=texture(img,uv);}"));
   gl.linkProgram(prog);
   const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
   for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k!, v!);
-  const rectLoc = gl.getUniformLocation(prog, "rect");
   return (framebuffer: WebGLFramebuffer | null, source: HTMLCanvasElement, src: { x: number; y: number; width: number; height: number }, dst: { x: number; y: number; width: number; height: number }) => {
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.useProgram(prog); gl.bindVertexArray(vao); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
-    // both eyes come from the same side-by-side canvas: upload it once, on the first (x = 0) eye
-    if (src.x === 0) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    gl.uniform4f(rectLoc, src.x / source.width, src.y / source.height, src.width / source.width, src.height / source.height);
+    // upload only this eye's rectangle of the side-by-side canvas (WebGL2 sub-rectangle upload), mediump would quantize the UVs
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, source.width); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, src.x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, src.y);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, src.width, src.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
     gl.viewport(dst.x, dst.y, dst.width, dst.height);
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
