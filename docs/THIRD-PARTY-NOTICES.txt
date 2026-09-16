@@ -1,0 +1,16 @@
+Spider Swing VR — third-party notices
+
+Vapour Engine
+  Copyright the Vapour Engine contributors.
+  Licensed under the GNU Lesser General Public License, version 3.0 or later.
+  Source: https://github.com/vapour-engine/vapour
+  Licence text: https://www.gnu.org/licenses/lgpl-3.0.html
+
+  This game links the engine as a separate WebAssembly module
+  (vapour_runtime_bg.wasm and vapour_runtime.js). Replacing those files with a
+  modified build of Vapour runs this game against the modified engine, which
+  satisfies LGPL section 4 without requiring any part of this game's own source.
+
+  The engine bundles Rust and npm dependencies distributed under the MIT and
+  Apache-2.0 licences. Those licences require attribution only and place no
+  obligation on this game.
